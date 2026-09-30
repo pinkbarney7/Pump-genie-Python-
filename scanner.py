@@ -125,6 +125,8 @@ class PumpGenie:
         self.db.commit()
         self.inbox: queue.Queue[Candidate] = queue.Queue(maxsize=10000)
         self.candidates: dict[tuple[str, str], Candidate] = {}
+        self.webhook_enabled = False
+        self.dry_run_enabled = DRY_RUN
 
     def get_json(self, url: str) -> Any:
         for attempt in range(4):
@@ -301,7 +303,7 @@ class PumpGenie:
                 "timestamp": datetime.now(timezone.utc).isoformat(),
             }],
         }
-        if DRY_RUN:
+        if self.dry_run_enabled:
             log.info("DRY RUN alert: %s", json.dumps(payload, indent=2))
         else:
             response = self.session.post(WEBHOOK_URL, json=payload, timeout=REQUEST_TIMEOUT)
@@ -335,11 +337,33 @@ class PumpGenie:
             time.sleep(0.2)
 
     def run(self) -> None:
-        if not WEBHOOK_URL and not DRY_RUN:
-            raise RuntimeError("Set DISCORD_WEBHOOK_URL or enable DRY_RUN=true")
+        # Determine webhook and dry-run status
+        if not WEBHOOK_URL:
+            self.dry_run_enabled = True
+            log.warning("DISCORD_WEBHOOK_URL is not set; automatically running in dry-run mode")
+        else:
+            self.webhook_enabled = True
+
+        # Log enabled settings (non-secret)
+        enabled_settings = []
+        if ENABLE_PUMP_STREAM:
+            enabled_settings.append("Pump.fun live stream")
+        if self.webhook_enabled:
+            enabled_settings.append("Discord webhook posting")
+        if self.dry_run_enabled:
+            enabled_settings.append("dry-run mode")
+
+        log.info(
+            "Pump Genie started: chains=%s poll=%ss min_score=%s enabled=[%s]",
+            sorted(CHAIN_IDS),
+            POLL_SECONDS,
+            MIN_SCORE,
+            ", ".join(enabled_settings) or "none",
+        )
+
         if ENABLE_PUMP_STREAM:
             PumpLaunchFeed(self.inbox).start()
-        log.info("Pump Genie started: chains=%s poll=%ss score=%s dry_run=%s", sorted(CHAIN_IDS), POLL_SECONDS, MIN_SCORE, DRY_RUN)
+
         while True:
             started = time.time()
             try:
